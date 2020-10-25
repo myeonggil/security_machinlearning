@@ -131,6 +131,8 @@ standard_scaler.transform(train_x[continuous_features])
 test_x[continuous_features] = \
 standard_scaler.transform(test_x[continuous_features])
 
+train_Y_bin = train_Y.apply(lambda x: 0 if x is 'benign' else 1)
+test_Y_bin = test_Y.apply(lambda x: 0 if x is 'benign' else 1)
 
 # 의사 결정 트리
 # from sklearn.tree import DecisionTreeClassifier
@@ -195,8 +197,8 @@ ratio = {
 }
 rus = RandomUnderSampler(sampling_strategy=ratio, random_state=0)
 train_x_rus, train_Y_rus = rus.fit_sample(train_x, train_Y)
-print(pd.Series(train_Y_rus).value_counts())
-
+# print(pd.Series(train_Y_rus).value_counts())
+#
 from sklearn.tree import DecisionTreeClassifier
 
 classifier = DecisionTreeClassifier(random_state=17)
@@ -204,4 +206,162 @@ classifier.fit(train_x_rus, train_Y_rus)
 pred_y = classifier.predict(test_x)
 results = confusion_matrix(test_Y, pred_y)
 error = zero_one_loss(test_Y, pred_y)
-print(error)
+# print(error)
+
+from sklearn.cluster import KMeans
+
+kmeans = KMeans(n_clusters=5).fit(train_x)
+pred_y = kmeans.predict(test_x)
+
+# 군집화 결과 확인
+# print(pd.Series(pred_y).value_counts())
+
+from sklearn.metrics import completeness_score, homogeneity_score, v_measure_score
+
+# print('Completeness: {}'.format(completeness_score(test_Y, pred_y)))
+# print('Homogeneity: {}'.format(homogeneity_score(test_Y, pred_y)))
+# print('V-measure: {}'.format(v_measure_score(test_Y, pred_y)))
+
+# 데이터 분산의 많은 부분을 포착하라면 충분한 수의 주성분 요소를 선택
+from sklearn.decomposition import PCA
+#
+pca = PCA(n_components=2)
+train_x_pca = pca.fit_transform(train_x)
+#
+# plt.figure()
+# colors = ['navy', 'turquoise', 'darkorange', 'red', 'purple']
+#
+# for color, cat in zip(colors, category.keys()):
+#     plt.scatter(train_x_pca[train_Y==cat, 0],
+#                 train_x_pca[train_Y==cat, 1],
+#                 color=color, alpha=.8, lw=2, label=cat)
+#
+# # u2r의 샘플 데이터가 너무 적기 때문에 비적합
+# plt.legend(loc='best', shadow=False, scatterpoints=1)
+# plt.show()
+
+# 점들 시각화
+# 훈련 데이터를 k-평균 군집화 estimator 모델이 적합시킨다.
+from sklearn.cluster import KMeans
+
+kmeans = KMeans(n_clusters=5, random_state=17).fit(train_x)
+# 각 훈련 샘플에 할당된 레이블을 불러온다.
+kmeans_y = kmeans.labels_
+
+# train_x_pca_count를 2d로 시각화한다.
+plt.figure()
+colors = ['navy', 'turquoise', 'darkorange', 'red', 'purple']
+
+# for color, cat in zip(colors, range(5)):
+#     plt.scatter(train_x_pca[kmeans_y==cat, 0],
+#                 train_x_pca[kmeans_y==cat, 1],
+#                 color=color, alpha=.8, lw=2, label=cat)
+#
+# plt.legend(loc='best', shadow=False, scatterpoints=1)
+# plt.show()
+
+averages = train_df.loc[:, numeric_cols].mean()
+averages_per_class = train_df[numeric_cols + ['attack_category']].groupby('attack_category').mean()
+
+AR = {}
+for col in numeric_cols:
+    AR[col] = max(averages_per_class[col]) / averages[col]
+
+def binary_AR(df, col):
+    series_zero = df[df[col] == 0].groupby('attack_category').size()
+    series_one = df[df[col] == 1].groupby('attack_category').size()
+
+    return max(series_one / series_zero)
+
+labels2 = ['normal', 'attack']
+labels5 = ['normal', 'dos', 'probe', 'r2l', 'u2r']
+
+train_df = pd.read_csv(train_file, names=header_names)
+train_df['attack_category'] = train_df['attack_type'].map(lambda x: attack_mapping[x])
+train_df.drop(['success_pred'], axis=1, inplace=True)
+
+test_df = pd.read_csv(test_file, names=header_names)
+test_df['attack_category'] = test_df['attack_type'].map(lambda x: attack_mapping[x])
+test_df.drop(['success_pred'], axis=1, inplace=True)
+
+train_attack_types = train_df['attack_type'].value_counts()
+train_attack_cats = train_df['attack_category'].value_counts()
+test_attack_types = test_df['attack_type'].value_counts()
+test_attack_cats = test_df['attack_category'].value_counts()
+
+train_df['su_attempted'].replace(2, 0, inplace=True)
+test_df['su_attempted'].replace(2, 0, inplace=True)
+train_df.drop('num_outbound_cmds', axis=1, inplace=True)
+test_df.drop('num_outbound_cmds', axis=1, inplace=True)
+
+train_df['labels2'] = train_df.apply(lambda x: 'normal' if 'normal' in x['attack_type'] else 'attack', axis=1)
+test_df['label2'] = test_df.apply(lambda x: 'normal' if 'normal' in x['attack_type'] else 'attack', axis=1)
+
+combined_df = pd.concat([train_df, test_df])
+original_cols = combined_df.columns
+
+combined_df = pd.get_dummies(combined_df, columns=nominal_cols, drop_first=True)
+
+added_cols = set(combined_df.columns) - set(original_cols)
+added_cols= list(added_cols)
+
+combined_df.attack_category = pd.Categorical(combined_df.attack_category)
+combined_df.labels2 = pd.Categorical(combined_df.labels2)
+
+combined_df['labels5'] = combined_df['attack_category'].cat.codes
+combined_df['labels2'] = combined_df['labels2'].cat.codes
+
+train_df = combined_df[:len(train_df)]
+test_df = combined_df[len(train_df):]
+
+for col in binary_cols + dummy_variables:
+    cur_AR = binary_AR(train_df, col)
+    if cur_AR:
+        AR[col] = cur_AR
+
+print(train_df[train_df.service_Z39_50 == 1].groupby('attack_category').size())
+print(len(binary_cols + added_cols))
+
+import operator
+
+AR = dict((k, v) for k, v in AR.items() if not np.isnan(v))
+sorted_AR = sorted(AR.items(), key=lambda x: x[1], reverse=True)
+print(sorted_AR)
+
+features_to_use = []
+for x, y in sorted_AR:
+    if y >= 0.01:
+        features_to_use.append(x)
+
+print(features_to_use)
+print(len(features_to_use))
+print(len(sorted_AR) - len(features_to_use))
+
+train_df_trimmed = train_df[features_to_use]
+test_df_trimmed = test_df[features_to_use]
+
+numeric_cols_to_use = list(set(numeric_cols).intersection(features_to_use))
+
+standard_scaler = StandardScaler()
+
+train_df_trimmed[numeric_cols_to_use] = standard_scaler.fit_transform(train_df_trimmed[numeric_cols_to_use])
+test_df_trimmed[numeric_cols_to_use] = standard_scaler.transform(test_df_trimmed[numeric_cols_to_use])
+
+kmeans = KMeans(n_clusters=8, random_state=17)
+kmeans.fit(train_df_trimmed[numeric_cols_to_use])
+kmeans_train_y = kmeans.labels_
+
+print(pd.crosstab(kmeans_train_y, train_Y_bin))
+
+train_df['kmeans_y'] = kmeans_train_y
+train_df_trimmed['kmeans_y'] = kmeans_train_y
+kmeans_test_y = kmeans.predict(test_df_trimmed[numeric_cols_to_use])
+test_df['kmeans_y'] = kmeans_test_y
+
+train_y4 = train_df[train_df.kmeans_y == 4]
+test_y4 = test_df[test_df.kmeans_y == 4]
+
+dtc4 = DecisionTreeClassifier(random_state=17).fit(train_y4.drop(['kmeans_y'], axis=1), train_y4['labels2'])
+
+dtc4_pred_y = dtc4.predict(test_y4.drop(['kmeans_y'], axis=1))
+print(dtc4_pred_y)
